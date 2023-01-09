@@ -1,6 +1,7 @@
 import copy
 import math
-
+import scipy.sparse as sp
+from scipy.sparse import csr_matrix
 from torch import nn
 import torch
 import numpy as np
@@ -272,7 +273,7 @@ class LinearExplicitScorePredictor(ScorePredictor):
 class InvPrefImplicit(GeneralDebiasImplicitRecommender):
     def __init__(
             self, user_num: int, item_num: int, env_num: int, factor_num: int, reg_only_embed: bool = False,
-            reg_env_embed: bool = True
+            reg_env_embed: bool = True, use_lgn: bool = False, graph_path = None, device = None
     ):
         super(InvPrefImplicit, self).__init__(
             user_num=user_num, item_num=item_num, env_num=env_num
@@ -294,8 +295,30 @@ class InvPrefImplicit(GeneralDebiasImplicitRecommender):
         self.reg_only_embed: bool = reg_only_embed
 
         self.reg_env_embed: bool = reg_env_embed
+        self.use_lgn = use_lgn
+        if graph_path is not None:
+            self.Graph = self.load_graph(graph_path).to(device)
+            self.n_users = user_num
+            self.n_items = item_num
+
 
         self._init_weight()
+
+    def _convert_sp_mat_to_sp_tensor(self, X):
+        coo = X.tocoo().astype(np.float32)
+        row = torch.Tensor(coo.row).long()
+        col = torch.Tensor(coo.col).long()
+        index = torch.stack([row, col])
+        data = torch.FloatTensor(coo.data)
+        return torch.sparse.FloatTensor(index, data, torch.Size(coo.shape))
+
+    def load_graph(self, graph_path):
+        norm_adj = sp.load_npz(graph_path)
+        Graph = self._convert_sp_mat_to_sp_tensor(norm_adj)
+        Graph = Graph.coalesce()
+        return Graph 
+        
+
 
     def _init_weight(self):
         nn.init.normal_(self.embed_user_invariant.weight, std=0.01)
@@ -304,12 +327,47 @@ class InvPrefImplicit(GeneralDebiasImplicitRecommender):
         nn.init.normal_(self.embed_item_env_aware.weight, std=0.01)
         nn.init.normal_(self.embed_env.weight, std=0.01)
 
-    def forward(self, users_id, items_id, envs_id, alpha):
-        users_embed_invariant: torch.Tensor = self.embed_user_invariant(users_id)
-        items_embed_invariant: torch.Tensor = self.embed_item_invariant(items_id)
 
-        users_embed_env_aware: torch.Tensor = self.embed_user_env_aware(users_id)
-        items_embed_env_aware: torch.Tensor = self.embed_item_env_aware(items_id)
+    def compute(self, inv=False):
+        if inv:
+            users_emb = self.embed_user_invariant.weight
+            items_emb = self.embed_item_invariant.weight
+        else:
+            users_emb = self.embed_user_env_aware.weight
+            items_emb = self.embed_item_env_aware.weight
+        all_emb = torch.cat([users_emb, items_emb])
+
+        embs = [all_emb]
+        g_droped = self.Graph
+
+        for layer in range(2):
+            all_emb = torch.sparse.mm(g_droped, all_emb)
+            embs.append(all_emb)
+        embs = torch.stack(embs, dim=1)
+
+        light_out = torch.mean(embs, dim=1)
+        users, items = torch.split(light_out, [self.n_users, self.n_items])
+
+        return users, items
+
+
+    def forward(self, users_id, items_id, envs_id, alpha):
+        if self.use_lgn:
+            users_embed_invariant, items_embed_invariant = self.compute(inv=True)
+            users_embed_env_aware, items_embed_env_aware = self.compute(inv=False)
+
+            users_embed_invariant: torch.Tensor = users_embed_invariant[users_id]
+            items_embed_invariant: torch.Tensor = items_embed_invariant[items_id]
+
+            users_embed_env_aware: torch.Tensor = users_embed_env_aware[users_id]
+            items_embed_env_aware: torch.Tensor = items_embed_env_aware[items_id]
+
+        else:
+            users_embed_invariant: torch.Tensor = self.embed_user_invariant(users_id)
+            items_embed_invariant: torch.Tensor = self.embed_item_invariant(items_id)
+
+            users_embed_env_aware: torch.Tensor = self.embed_user_env_aware(users_id)
+            items_embed_env_aware: torch.Tensor = self.embed_item_env_aware(items_id)
 
         envs_embed: torch.Tensor = self.embed_env(envs_id)
 

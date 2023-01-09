@@ -11,14 +11,16 @@ from train import ImplicitTrainManager
 from utils import draw_score_pic, merge_dict, _show_me_a_list_func, draw_loss_pic_one_by_one, query_user, query_str, \
     mkdir, query_int, get_class_name_str, _mean_merge_dict_func, show_me_all_the_fucking_result
 
-torch.cuda.set_device(7)
+torch.cuda.set_device(0)
 DEVICE: torch.device = torch.device('cuda')
 
 MODEL_CONFIG: dict = {
     'env_num': 2,
     'factor_num': 40,
     'reg_only_embed': True,
-    'reg_env_embed': False
+    'reg_env_embed': False,
+    'use_lgn': True,
+    'graph_path': '/storage/pbwei/INV-LGN/data/yahoo_4/s_pre_adj_mat.npz'
 }
 
 TRAIN_CONFIG: dict = {
@@ -49,7 +51,7 @@ EVALUATE_CONFIG: dict = {
 
 RANDOM_SEED_LIST = [17373331, 17373511, 17373423]
 
-DATASET_PATH = '/Yahoo_all_data/'
+DATASET_PATH = '/Yahoo_all_data'
 METRIC_LIST = ['ndcg', 'recall', 'precision']
 
 
@@ -75,7 +77,10 @@ def main(
         env_num=model_config['env_num'],
         factor_num=model_config['factor_num'],
         reg_only_embed=model_config['reg_only_embed'],
-        reg_env_embed=model_config['reg_env_embed']
+        reg_env_embed=model_config['reg_env_embed'],
+        use_lgn = model_config['use_lgn'],
+        graph_path = model_config['graph_path'],
+        device = device
     )
     model = model.to(device)
 
